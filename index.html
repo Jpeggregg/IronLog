@@ -214,6 +214,11 @@
   .block-sub .wk-now{font-family:'JetBrains Mono',monospace;color:var(--forge);font-weight:700;}
   .linkbtn{background:none;border:none;color:var(--steel);font-size:12px;cursor:pointer;text-decoration:underline;padding:0;}
 
+  /* ---------- backup card ---------- */
+  .backup-card{background:var(--surface);border:1px solid var(--steel);border-radius:13px;padding:14px 16px;margin:18px 0;}
+  .backup-card .eyebrow{font-size:10px;letter-spacing:.18em;color:var(--steel);text-transform:uppercase;font-weight:600;}
+  .backup-card .import-hint{margin:6px 0 12px;}
+
   /* ---------- import / export panel ---------- */
   .tools{margin-top:6px;}
   .tools .toggle{width:100%;background:var(--surface);border:1px solid var(--line);color:var(--muted);
@@ -266,6 +271,7 @@
 <header>
   <div class="brand">
     <span class="logo">IRON<b>LOG</b></span>
+    <span class="tag" id="verTag"></span>
   </div>
   <div class="today-date" id="dateBox"></div>
 </header>
@@ -292,6 +298,7 @@
 <script>
 // On-device storage — data lives in this browser, no network needed.
 const NS = 'ironlog:';
+const APP_VERSION = 'v2';   // bump this every update so you can confirm the new code loaded
 
 let program  = { days: [] };
 let sessions = [];
@@ -436,6 +443,7 @@ function dayProgress(day){
 =================================================================== */
 function render(){
   const t=todayLabel();
+  const vt=document.getElementById('verTag'); if(vt) vt.textContent=APP_VERSION;
   document.getElementById('dateBox').innerHTML=`<b>${t.dow}</b>${t.date}`;
   document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('on',b.dataset.view===view));
   if(view==='today') renderToday();
@@ -667,6 +675,18 @@ function renderProgram(){
       </div>
     </div>`;
 
+  const sc=sessions.length;
+  const backup=`
+    <div class="backup-card">
+      <div class="eyebrow">Safety · back up before every update</div>
+      <p class="import-hint">Saves your whole vault (${sc} session${sc===1?'':'s'}) <b>and</b> program to a file you keep in Files or iCloud. Do this before changing the app on GitHub — then even a wipe is a 10-second restore.</p>
+      <div class="btn-row">
+        <button class="btn btn-forge" data-act="backup">⭳ Download backup</button>
+        <button class="btn btn-ghost" data-act="restorepick">Restore from file</button>
+      </div>
+      <input type="file" id="restoreFile" accept="application/json,.json" style="display:none">
+    </div>`;
+
   const tools=`
     <div class="tools">
       <button class="toggle" data-act="toggleimport">Import or export a block <span>${showImport?'▴':'▾'}</span></button>
@@ -685,6 +705,7 @@ function renderProgram(){
     ${blockBar}
     ${days||'<div class="empty">Add your first training day below.</div>'}
     <button class="btn btn-ghost" data-act="addday" style="margin-top:6px">+ Add training day</button>
+    ${backup}
     ${tools}
     <div class="danger-zone"><button data-act="reset">Reset all data &amp; start fresh</button></div>`;
 }
@@ -772,6 +793,8 @@ $app.addEventListener('click',e=>{
     saveProgram(); render(); toast(`Set to week ${n}`);
     return;
   }
+  if(act==='backup'){ doBackup(); return; }
+  if(act==='restorepick'){ const f=document.getElementById('restoreFile'); if(f) f.click(); return; }
   if(act==='toggleimport'){ showImport=!showImport; render(); return; }
   if(act==='exportprog'){
     const out=JSON.stringify({
@@ -904,6 +927,49 @@ function finishSession(){
   toast('Session saved to vault 💪');
 }
 
+/* ---------- backup / restore (whole vault to a .json file) ---------- */
+function doBackup(){
+  const payload={ app:'IronLog', version:APP_VERSION, exportedAt:new Date().toISOString(), program, sessions };
+  const json=JSON.stringify(payload,null,2);
+  const stamp=new Date().toISOString().slice(0,10);
+  const fname=`ironlog-backup-${stamp}.json`;
+  const blob=new Blob([json],{type:'application/json'});
+  // On iPhone the share sheet gives "Save to Files"/iCloud; fall back to a direct download elsewhere.
+  try{
+    const file=new File([blob],fname,{type:'application/json'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({files:[file],title:'IronLog backup'}).catch(()=>{});
+      return;
+    }
+  }catch(e){}
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=fname; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); },1000);
+  toast('Backup saved');
+}
+function doRestore(file){
+  const reader=new FileReader();
+  reader.onload=()=>{
+    let data;
+    try{ data=JSON.parse(reader.result); }catch(e){ toast('That file isn’t valid IronLog JSON'); return; }
+    if(!data || !data.program || !Array.isArray(data.program.days) || !Array.isArray(data.sessions)){
+      toast('This doesn’t look like an IronLog backup'); return;
+    }
+    const n=data.sessions.length;
+    if(confirm(`Restore this backup? It replaces your current program and all logged sessions with the backup — ${n} session${n===1?'':'s'}.`)){
+      program=data.program;
+      if(!program.block) program.block={name:'',start:null,weeks:6};
+      sessions=data.sessions;
+      draft=null; saveProgram(); saveSessions(); saveDraft();
+      selectedDayId=null; view='vault'; vaultTab='history'; render(); window.scrollTo(0,0);
+      toast('Backup restored 💪');
+    }
+  };
+  reader.onerror=()=>toast('Couldn’t read that file');
+  reader.readAsText(file);
+}
+
 /* ---------- utils ---------- */
 function esc(s){ return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -917,6 +983,7 @@ function toast(msg){
 $app.addEventListener('change',e=>{
   if(e.target.id==='progSel'){ progressExName=e.target.value; render(); }
   if(e.target.id==='blockFilter'){ blockFilter=e.target.value; render(); }
+  if(e.target.id==='restoreFile'){ const f=e.target.files&&e.target.files[0]; if(f) doRestore(f); e.target.value=''; }
 });
 
 /* ---------- boot ---------- */
@@ -930,5 +997,3 @@ $app.addEventListener('change',e=>{
   render();
 })();
 </script>
-
-
